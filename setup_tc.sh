@@ -1,81 +1,61 @@
 #!/bin/bash
 
-# TC拦截脚本 - 在出口增加流量拦截
-# 用法: ./setup_tc.sh <interface> [action]
-# action: add/remove/show
+# 设置TC规则来启用端口流量统计
+# 使用方法: ./setup_tc.sh <interface> [action]
+# action: setup (默认), clean, show
 
 INTERFACE=${1:-eth0}
-ACTION=${2:-add}
+ACTION=${2:-setup}
 
-# 检查是否以root权限运行
-if [ "$EUID" -ne 0 ]; then
-    echo "请以root权限运行此脚本"
-    exit 1
-fi
-
-# 检查接口是否存在
-if ! ip link show $INTERFACE > /dev/null 2>&1; then
-    echo "错误: 接口 $INTERFACE 不存在"
-    exit 1
-fi
+echo "TC端口流量统计设置脚本"
+echo "接口: $INTERFACE"
+echo "操作: $ACTION"
 
 case $ACTION in
-    "add")
-        echo "在接口 $INTERFACE 上添加TC拦截规则..."
+    "setup")
+        echo "正在设置TC规则..."
         
-        # 删除现有的qdisc（如果存在）
-        tc qdisc del dev $INTERFACE root 2>/dev/null || true
+        # 检查接口是否存在
+        if ! ip link show $INTERFACE > /dev/null 2>&1; then
+            echo "错误: 接口 $INTERFACE 不存在"
+            exit 1
+        fi
         
-        # 添加HTB qdisc作为根qdisc
-        tc qdisc add dev $INTERFACE root handle 1: htb default 30
+        # 清理现有的TC规则
+        tc qdisc del dev $INTERFACE ingress 2>/dev/null || true
         
-        # 创建根类
-        tc class add dev $INTERFACE parent 1: classid 1:1 htb rate 1000mbit
+        # 添加ingress qdisc
+        tc qdisc add dev $INTERFACE handle ffff: ingress
         
-        # 创建默认类（用于正常流量）
-        tc class add dev $INTERFACE parent 1:1 classid 1:30 htb rate 1000mbit
+        # 添加eBPF程序到TC
+        # 注意: 这里需要先编译并加载eBPF程序
+        echo "请确保已编译并加载eBPF程序"
+        echo "运行: cargo build --release"
+        echo "然后运行: sudo ./target/release/xnet --iface $INTERFACE"
         
-        # 创建监控类（用于拦截和分析）
-        tc class add dev $INTERFACE parent 1:1 classid 1:10 htb rate 1000mbit
-        
-        # 添加过滤器，将所有流量重定向到监控类
-        tc filter add dev $INTERFACE protocol ip parent 1:0 prio 1 u32 \
-            match ip dst 0.0.0.0/0 flowid 1:10
-        
-        # 添加统计过滤器
-        tc filter add dev $INTERFACE protocol ip parent 1:0 prio 2 u32 \
-            match ip src 0.0.0.0/0 flowid 1:10
-        
-        echo "TC拦截规则已添加"
+        echo "TC规则设置完成"
+        echo "使用 'tc filter show dev $INTERFACE ingress' 查看规则"
         ;;
         
-    "remove")
-        echo "移除接口 $INTERFACE 上的TC规则..."
-        tc qdisc del dev $INTERFACE root 2>/dev/null || true
-        echo "TC规则已移除"
+    "clean")
+        echo "正在清理TC规则..."
+        tc qdisc del dev $INTERFACE ingress 2>/dev/null || true
+        echo "TC规则清理完成"
         ;;
         
     "show")
-        echo "显示接口 $INTERFACE 的TC配置:"
-        echo "=== Qdisc配置 ==="
+        echo "当前TC规则:"
         tc qdisc show dev $INTERFACE
         echo ""
-        echo "=== Class配置 ==="
-        tc class show dev $INTERFACE
-        echo ""
-        echo "=== Filter配置 ==="
-        tc filter show dev $INTERFACE
-        echo ""
-        echo "=== 统计信息 ==="
-        tc -s qdisc show dev $INTERFACE
-        tc -s class show dev $INTERFACE
+        echo "Ingress过滤器:"
+        tc filter show dev $INTERFACE ingress
         ;;
         
     *)
-        echo "用法: $0 <interface> [add|remove|show]"
-        echo "  add    - 添加TC拦截规则"
-        echo "  remove - 移除TC拦截规则"
-        echo "  show   - 显示TC配置和统计"
+        echo "用法: $0 <interface> [setup|clean|show]"
+        echo "  setup: 设置TC规则 (默认)"
+        echo "  clean: 清理TC规则"
+        echo "  show:  显示当前TC规则"
         exit 1
         ;;
 esac 

@@ -6,7 +6,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-xnet-common = { path = "../xnet-common", features = ["user"] }
+xnet-common = { path = "../xnet-common", features = ["aya"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
@@ -26,9 +26,13 @@ clap = { workspace = true, features = ["derive"] }
 
 # httpserver
 hex = { workspace = true }
-hyper = { version = "0.14", features = ["full"] }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+hyper = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+bytemuck = { workspace = true }
 
 # TODO(https://github.com/rust-lang/cargo/issues/12375): this should be an artifact dependency, but
 # it's not possible to tell cargo to use `-Z build-std` to build it. We cargo-in-cargo in the build

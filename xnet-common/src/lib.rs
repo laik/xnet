@@ -1,9 +1,31 @@
 #![no_std]
 
+use bytemuck::{Pod, Zeroable};
+
+// Use aya-ebpf for eBPF targets, aya for regular targets
+#[cfg(feature = "aya-ebpf")]
+pub use aya_ebpf;
+#[cfg(feature = "aya")]
+pub use aya;
+
 #[repr(C)]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
 pub struct LogEvent {
     pub msg: [u8; 64],
 }
+
+// 定义流量统计结构，供用户空间和内核空间共享
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+pub struct PortStats {
+    pub packets: u64,
+    pub bytes: u64,
+    pub last_seen: u64,
+}
+
+// Add aya::Pod implementation for PortStats when aya feature is enabled
+#[cfg(feature = "aya")]
+unsafe impl aya::Pod for PortStats {}
 
 // 存储IP地址的静态缓冲区
 static mut IP_BUFFER: [u8; 16] = [0; 16];

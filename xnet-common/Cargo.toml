@@ -7,9 +7,12 @@ license.workspace = true
 
 [features]
 default = []
-user = ["aya"]
 
 [dependencies]
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Use aya-ebpf for eBPF targets, aya for regular targets
+aya-ebpf = { workspace = true, optional = true }
 aya = { workspace = true, optional = true }
 
 [lib]

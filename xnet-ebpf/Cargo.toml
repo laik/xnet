@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-xnet-common = { path = "../xnet-common" }
+xnet-common = { path = "../xnet-common", features = ["aya-ebpf"] }
 
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
