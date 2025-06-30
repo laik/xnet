@@ -5,13 +5,16 @@ use core::{fmt::Display, num::NonZeroUsize};
 
 use aya_ebpf::{
     bindings::xdp_action,
-    macros::{map, xdp},
+    macros::{classifier, map, xdp},
     maps::HashMap,
+    programs::TcContext,
     programs::XdpContext,
 };
 use aya_log_common::DefaultFormatter;
 use aya_log_ebpf::{info, WriteToBuf};
 use xnet_common::int_to_ip;
+
+use aya_ebpf::bindings::{TC_ACT_OK, TC_ACT_RECLASSIFY};
 
 #[map]
 static mut IP_STATS: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
@@ -21,6 +24,12 @@ static mut CONNECTION_TRACK: HashMap<u64, u32> = HashMap::with_max_entries(8192,
 
 #[map]
 static mut CONNECTION_STATS: HashMap<u64, u64> = HashMap::with_max_entries(8192, 0);
+
+#[classifier]
+pub fn xnet_tc(ctx: TcContext) -> i32 {
+    info!(&ctx, "xnet_tc");
+    TC_ACT_OK
+}
 
 #[xdp]
 pub fn xnet(ctx: XdpContext) -> u32 {

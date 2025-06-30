@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use aya::{
     maps::Map,
-    programs::{Xdp, XdpFlags},
+    programs::{SchedClassifier as Tc, TcAttachType, Xdp, XdpFlags},
 };
 use clap::Parser;
 #[rustfmt::skip]
@@ -15,8 +15,6 @@ use log::{debug, warn, info};
 use tokio::signal;
 use tokio::time::interval;
 use xnet_common::LogEvent;
-
-
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -133,6 +131,12 @@ async fn main() -> anyhow::Result<()> {
     program
         .attach(&iface, XdpFlags::default())
         .context("failed to attach the XDP program with SKB mode")?;
+
+    let program: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into()?;
+    program.load()?;
+    program
+        .attach(&iface, TcAttachType::Ingress)
+        .context("failed to attach the TC program")?;
 
     // 初始化流量统计
     let mut traffic_stats = TrafficStats::new();
