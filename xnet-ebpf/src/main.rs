@@ -28,6 +28,22 @@ static mut CONNECTION_STATS: HashMap<u64, u64> = HashMap::with_max_entries(8192,
 #[classifier]
 pub fn xnet_tc(ctx: TcContext) -> i32 {
     info!(&ctx, "xnet_tc");
+
+    let data = ctx.data();
+    let data_end = ctx.data_end();
+    let eth_size = core::mem::size_of::<EthHdr>();
+    if data + eth_size > data_end {
+        return TC_ACT_OK;
+    }
+
+    let eth_hdr = unsafe { &*(data as *const EthHdr) };
+    let eth_proto = u16::from_be(eth_hdr.eth_proto);
+    if eth_proto != 0x0800 {
+        return TC_ACT_OK;
+    }
+
+    info!(&ctx, "tc ingress eth_proto: {}", eth_proto);
+
     TC_ACT_OK
 }
 

@@ -1,10 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "xnet",
-    "xnet-common",
-    "xnet-ebpf",
-]
+members = ["xnet", "xnet-common", "xnet-ebpf"]
 default-members = ["xnet", "xnet-common"]
 
 [workspace.package]
@@ -28,6 +24,14 @@ libc = { version = "0.2.159", default-features = false }
 log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
+
+
+# httpserver
+hex = { version = "0.4.3", default-features = false }
+hyper = { version = "0.14", features = ["full"] }
+serde = { version = "1.0.210", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.130", default-features = false, features = ["std"] }
+
 
 [profile.release.package.xnet-ebpf]
 debug = 2

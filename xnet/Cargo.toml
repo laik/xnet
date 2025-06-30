@@ -23,9 +23,13 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 clap = { workspace = true, features = ["derive"] }
-[build-dependencies]
-anyhow = { workspace = true }
-aya-build = { workspace = true }
+
+# httpserver
+hex = { workspace = true }
+hyper = { version = "0.14", features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
 # TODO(https://github.com/rust-lang/cargo/issues/12375): this should be an artifact dependency, but
 # it's not possible to tell cargo to use `-Z build-std` to build it. We cargo-in-cargo in the build
 # script to build this, but we want to teach cargo about the dependecy so that cache invalidation
@@ -43,3 +47,7 @@ xnet-ebpf = { path = "../xnet-ebpf" }
 [[bin]]
 name = "xnet"
 path = "src/main.rs"
+
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
