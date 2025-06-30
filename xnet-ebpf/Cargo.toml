@@ -8,6 +8,7 @@ xnet-common = { path = "../xnet-common" }
 
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
+aya-log-common = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

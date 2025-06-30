@@ -16,6 +16,8 @@ use tokio::signal;
 use tokio::time::interval;
 use xnet_common::LogEvent;
 
+
+
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long, default_value = "eth0")]

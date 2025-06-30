@@ -1,13 +1,17 @@
 #![no_std]
 #![no_main]
 
+use core::{fmt::Display, num::NonZeroUsize};
+
 use aya_ebpf::{
     bindings::xdp_action,
     macros::{map, xdp},
     maps::HashMap,
     programs::XdpContext,
 };
-use aya_log_ebpf::info;
+use aya_log_common::DefaultFormatter;
+use aya_log_ebpf::{info, WriteToBuf};
+use xnet_common::int_to_ip;
 
 #[map]
 static mut IP_STATS: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
@@ -62,7 +66,10 @@ fn try_xnet(ctx: XdpContext) -> Result<u32, ()> {
     // 记录基本包信息
     info!(
         &ctx,
-        "Packet: src={}, dst={}, proto={}", src_ip, dst_ip, protocol
+        "IP Packet: src={}, dst={}, proto={}",
+        int_to_ip(src_ip),
+        int_to_ip(dst_ip),
+        Protocol(protocol)
     );
 
     // 处理TCP连接
@@ -114,9 +121,9 @@ fn handle_tcp_connection(
         info!(
             ctx,
             "TCP SYN: {}:{} -> {}:{} (NEW_CONN)",
-            src_ip,
+            int_to_ip(src_ip),
             u16::from_be(src_port),
-            dst_ip,
+            int_to_ip(dst_ip),
             u16::from_be(dst_port)
         );
     } else if syn && ack {
@@ -128,9 +135,9 @@ fn handle_tcp_connection(
         info!(
             ctx,
             "TCP SYN+ACK: {}:{} -> {}:{} (ESTABLISHED)",
-            src_ip,
+            int_to_ip(src_ip),
             u16::from_be(src_port),
-            dst_ip,
+            int_to_ip(dst_ip),
             u16::from_be(dst_port)
         );
     } else if ack && !syn {
@@ -138,9 +145,9 @@ fn handle_tcp_connection(
         info!(
             ctx,
             "TCP ACK: {}:{} -> {}:{} (DATA)",
-            src_ip,
+            int_to_ip(src_ip),
             u16::from_be(src_port),
-            dst_ip,
+            int_to_ip(dst_ip),
             u16::from_be(dst_port)
         );
     } else if fin {
@@ -152,9 +159,9 @@ fn handle_tcp_connection(
         info!(
             ctx,
             "TCP FIN: {}:{} -> {}:{} (CLOSING)",
-            src_ip,
+            int_to_ip(src_ip),
             u16::from_be(src_port),
-            dst_ip,
+            int_to_ip(dst_ip),
             u16::from_be(dst_port)
         );
     } else if rst {
@@ -166,9 +173,9 @@ fn handle_tcp_connection(
         info!(
             ctx,
             "TCP RST: {}:{} -> {}:{} (RESET)",
-            src_ip,
+            int_to_ip(src_ip),
             u16::from_be(src_port),
-            dst_ip,
+            int_to_ip(dst_ip),
             u16::from_be(dst_port)
         );
     }
@@ -182,7 +189,7 @@ fn generate_conn_key(src_ip: u32, dst_ip: u32, src_port: u16, dst_port: u16) -> 
     let dst_ip_u64 = dst_ip as u64;
     let src_port_u64 = src_port as u64;
     let dst_port_u64 = dst_port as u64;
-    
+
     // 组合IP和端口形成64位连接键
     (src_ip_u64 << 32) | dst_ip_u64 | (src_port_u64 << 48) | (dst_port_u64 << 32)
 }
@@ -214,6 +221,30 @@ fn update_connection_stats(conn_key: u64, bytes: u64) -> Result<(), ()> {
     }
     Ok(())
 }
+
+#[repr(C)]
+#[derive(Debug)]
+struct Protocol(u8);
+
+impl WriteToBuf for Protocol {
+    fn write(self, buf: &mut [u8]) -> Option<NonZeroUsize> {
+        let protocol = self.0;
+        let protocol_str = match protocol {
+            17 => "UDP",
+            6 => "TCP",
+            1 => "ICMP",
+            58 => "ICMPv6",
+            2 => "IGMP",
+            103 => "PIM",
+            132 => "SCTP",
+            _ => "Unknown",
+        };
+
+        protocol_str.write(buf)
+    }
+}
+
+impl DefaultFormatter for Protocol {}
 
 #[repr(C, packed)]
 struct EthHdr {
