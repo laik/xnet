@@ -7,7 +7,7 @@ use aya_ebpf::{
 
 use aya_log_ebpf::{debug, info};
 use xnet_common::int_to_ip;
-use xnet_ebpf::{EthHdr, IpHdr, Protocol, TcpHdr};
+use xnet_ebpf::{EthHdr, IpHdr, Protocol, TcpHdr, UdpHdr};
 
 #[map]
 static mut IP_STATS: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
@@ -71,9 +71,47 @@ fn try_xnet(ctx: XdpContext) -> Result<u32, ()> {
     // 处理TCP连接
     if protocol == 6 {
         handle_tcp_connection(&ctx, data, data_end, ip_offset + ip_size, src_ip, dst_ip)?;
+    } else if protocol == 17 {
+        handle_udp_connection(&ctx, data, data_end, ip_offset + ip_size, src_ip, dst_ip)?;
     }
 
     Ok(xdp_action::XDP_PASS)
+}
+
+fn handle_udp_connection(
+    ctx: &XdpContext,
+    data: usize,
+    data_end: usize,
+    udp_offset: usize,
+    src_ip: u32,
+    dst_ip: u32,
+) -> Result<(), ()> {
+    let udp_size = core::mem::size_of::<UdpHdr>();
+    if data + udp_offset + udp_size > data_end {
+        return Err(());
+    }
+
+    // 安全访问UDP头部
+    let udphdr = (data + udp_offset) as *const UdpHdr;
+    let src_port = unsafe { (*udphdr).source };
+    let dst_port = unsafe { (*udphdr).dest };
+    let _udp_len = unsafe { (*udphdr).len };
+
+    // 更新IP统计
+    update_ip_stats(src_ip, (data_end - data) as u64)?;
+    update_ip_stats(dst_ip, (data_end - data) as u64)?;
+
+    // 记录UDP数据包
+    info!(
+        ctx,
+        "UDP: {}:{} -> {}:{}",
+        int_to_ip(src_ip),
+        u16::from_be(src_port),
+        int_to_ip(dst_ip),
+        u16::from_be(dst_port)
+    );
+
+    Ok(())
 }
 
 fn handle_tcp_connection(
@@ -112,7 +150,7 @@ fn handle_tcp_connection(
     if syn && !ack {
         // SYN包 - 新连接建立
         unsafe {
-            CONNECTION_TRACK.insert(&conn_key, &1, 0); // 1表示连接建立中
+            let _ = CONNECTION_TRACK.insert(&conn_key, &1, 0); // 1表示连接建立中
         }
         debug!(
             ctx,
@@ -125,8 +163,8 @@ fn handle_tcp_connection(
     } else if syn && ack {
         // SYN+ACK包 - 连接确认
         unsafe {
-            CONNECTION_TRACK.insert(&conn_key, &2, 0); // 2表示连接已建立
-            CONNECTION_TRACK.insert(&reverse_conn_key, &2, 0);
+            let _ = CONNECTION_TRACK.insert(&conn_key, &2, 0); // 2表示连接已建立
+            let _ = CONNECTION_TRACK.insert(&reverse_conn_key, &2, 0);
         }
         debug!(
             ctx,
@@ -149,8 +187,8 @@ fn handle_tcp_connection(
     } else if fin {
         // FIN包 - 连接关闭
         unsafe {
-            CONNECTION_TRACK.insert(&conn_key, &3, 0); // 3表示连接关闭中
-            CONNECTION_TRACK.insert(&reverse_conn_key, &3, 0);
+            let _ = CONNECTION_TRACK.insert(&conn_key, &3, 0); // 3表示连接关闭中
+            let _ = CONNECTION_TRACK.insert(&reverse_conn_key, &3, 0);
         }
         info!(
             ctx,
@@ -163,8 +201,8 @@ fn handle_tcp_connection(
     } else if rst {
         // RST包 - 连接重置
         unsafe {
-            CONNECTION_TRACK.insert(&conn_key, &4, 0); // 4表示连接重置
-            CONNECTION_TRACK.insert(&reverse_conn_key, &4, 0);
+            let _ = CONNECTION_TRACK.insert(&conn_key, &4, 0); // 4表示连接重置
+            let _ = CONNECTION_TRACK.insert(&reverse_conn_key, &4, 0);
         }
         info!(
             ctx,

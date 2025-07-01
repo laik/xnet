@@ -74,6 +74,16 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to attach the TC program")?;
     }
 
+    if let Err(e) = server::start_server().await {
+        warn!("failed to start server: {e}");
+    }
+    // // server
+    // tokio::spawn(async move {
+    //     if let Err(e) = server::start_server().await {
+    //         warn!("failed to start server: {e}");
+    //     }
+    // });
+
     // 初始化流量统计
     let mut traffic_stats = traffic::TrafficStats::new();
 
@@ -83,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let mut ctrl_c = pin!(signal::ctrl_c());
 
     // 主循环
+
     loop {
         tokio::select! {
             _ = interval_timer.tick() => {

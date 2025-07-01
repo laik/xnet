@@ -135,12 +135,12 @@ async fn handle_monitor_device(
 }
 
 async fn handle_request(
-    tc: &mut SchedClassifier,
+    // tc: &mut SchedClassifier,
     req: Request<Body>,
 ) -> Result<Response<Body>, hyper::Error> {
     match req.uri().path() {
         "/" => heartbeat().await,
-        "/monitor_device" => handle_monitor_device(tc, req).await,
+        // "/monitor_device" => handle_monitor_device(tc, req).await,
         _ => Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::from("Not found"))
@@ -148,21 +148,24 @@ async fn handle_request(
     }
 }
 
-pub async fn start_server(tc: &'static mut SchedClassifier) -> Result<(), hyper::Error> {
+pub async fn start_server() -> Result<(), hyper::Error> {
     // 启动 HTTP 服务
-    let addr = ([0, 0, 0, 0], 8080).into();
-    let tc = Arc::new(Mutex::new(tc));
-    let make_svc = make_service_fn(move |_conn| {
-        let tc = tc.clone();
-        async move {
-            Ok::<_, hyper::Error>(service_fn(move |req| {
-                let tc = tc.clone();
-                async move {
-                    let mut tc = tc.lock().await;
-                    handle_request(&mut tc, req).await
-                }
-            }))
-        }
+    let addr = ([0, 0, 0, 0], 8090).into();
+
+    let make_svc = make_service_fn(move |_conn| async move {
+        Ok::<_, hyper::Error>(service_fn(move |req| {
+            async move {
+                // 加载eBPF程序
+                // let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
+                //     env!("OUT_DIR"),
+                //     "/xnet"
+                // )))
+                // .unwrap();
+                // let xnet_tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into().unwrap();
+                // xnet_tc.load().unwrap();
+                handle_request(req).await
+            }
+        }))
     });
     let server = Server::bind(&addr).serve(make_svc);
     println!("HTTP 服务器启动在 http://0.0.0.0:8080");

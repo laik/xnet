@@ -63,3 +63,11 @@ pub struct TcpHdr {
     pub check: u16,
     pub urg_ptr: u16,
 }
+
+#[repr(C, packed)]
+pub struct UdpHdr {
+    pub source: u16,
+    pub dest: u16,
+    pub len: u16,
+    pub check: u16,
+}
