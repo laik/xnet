@@ -19,7 +19,7 @@ static mut CONNECTION_TRACK: HashMap<u64, u32> = HashMap::with_max_entries(8192,
 static mut CONNECTION_STATS: HashMap<u64, u64> = HashMap::with_max_entries(8192, 0);
 
 #[xdp]
-pub fn xnet(ctx: XdpContext) -> u32 {
+pub fn xnet_xdp(ctx: XdpContext) -> u32 {
     match try_xnet(ctx) {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_PASS,

@@ -1,12 +1,7 @@
 use anyhow::Context as _;
-use aya::programs::{SchedClassifier as Tc, TcAttachType, Xdp, XdpFlags};
 use clap::Parser;
-use std::pin::pin;
-use std::time::{Duration, Instant};
-use tokio::time::interval;
 #[rustfmt::skip]
 use log::{debug, warn};
-use tokio::signal;
 
 mod server;
 mod traffic;
@@ -43,70 +38,15 @@ async fn main() -> anyhow::Result<()> {
     )))?;
 
     // 初始化 eBPF 日志
-
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         warn!("failed to initialize eBPF logger: {e}");
     }
 
-    let Opt {
-        iface,
-        interval_secs,
-    } = opt;
+    let _opt = opt;
 
-    // XDP program
-    {
-        let xnet_xdp: &mut Xdp = ebpf.program_mut("xnet").unwrap().try_into()?;
-        xnet_xdp.load()?;
-        xnet_xdp
-            .attach(&iface, XdpFlags::default())
-            .context("failed to attach the XDP program with SKB mode")?;
-    }
-    // TC program
-    {
-        let xnet_tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into()?;
-        xnet_tc.load()?;
-        xnet_tc
-            .attach(&iface, TcAttachType::Ingress)
-            .context("failed to attach the TC program")?;
-
-        xnet_tc
-            .attach(&iface, TcAttachType::Egress)
-            .context("failed to attach the TC program")?;
-    }
-
-    if let Err(e) = server::start_server().await {
-        warn!("failed to start server: {e}");
-    }
-    // // server
-    // tokio::spawn(async move {
-    //     if let Err(e) = server::start_server().await {
-    //         warn!("failed to start server: {e}");
-    //     }
-    // });
-
-    // 初始化流量统计
-    let mut traffic_stats = traffic::TrafficStats::new();
-
-    // 设置定期统计更新
-    let mut interval_timer = interval(Duration::from_secs(interval_secs));
-
-    let mut ctrl_c = pin!(signal::ctrl_c());
-
-    // 主循环
-
-    loop {
-        tokio::select! {
-            _ = interval_timer.tick() => {
-                // 定期更新统计信息
-                traffic_stats.last_update = Instant::now();
-                traffic_stats.update_from_ebpf(&ebpf);
-                traffic_stats.print_summary();
-            }
-            _ = ctrl_c.as_mut() => {
-                println!("\n正在退出...");
-                break;
-            }
-        }
+    // server
+    if let Err(err) = server::serve(ebpf).await {
+        warn!("failed to start server: {err}");
     }
 
     Ok(())

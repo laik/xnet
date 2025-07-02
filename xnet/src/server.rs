@@ -1,174 +1,140 @@
 use std::sync::Arc;
 
-use anyhow::Context as _;
-use aya::programs::SchedClassifier;
+use axum::response::IntoResponse;
+use axum::Extension;
+use axum::{extract::Json, http::StatusCode, Router};
 use aya::programs::{SchedClassifier as Tc, TcAttachType};
-use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Method, Request, Response, Server, StatusCode,
-};
-use serde_json;
+use aya::programs::Xdp;
+use aya::Ebpf;
+use log::info;
 use tokio::sync::Mutex;
 
+use crate::traffic::TrafficStats;
+
+// 包装 eBPF 实例，提供线程安全的可变访问
+pub struct EbpfManager {
+    ebpf: Mutex<Ebpf>,
+}
+
+impl EbpfManager {
+    pub fn new(ebpf: Ebpf) -> Self {
+        Self {
+            ebpf: Mutex::new(ebpf),
+        }
+    }
+
+    // 加载所有 eBPF 程序
+    pub async fn load_programs(&self) -> Result<(), anyhow::Error> {
+        let mut ebpf = self.ebpf.lock().await;
+        
+        // 加载 XDP 程序
+        let xnet_xdp = ebpf.program_mut("xnet_xdp").unwrap();
+        let xnet_xdp: &mut Xdp = xnet_xdp.try_into().unwrap();
+        xnet_xdp.load()?;
+        info!("xnet_xdp program loaded");
+
+        // 加载 TC 程序
+        let xnet_tc = ebpf.program_mut("xnet_tc").unwrap();
+        let xnet_tc: &mut Tc = xnet_tc.try_into().unwrap();
+        xnet_tc.load()?;
+        info!("xnet_tc program loaded");
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Action {
     Add = 1,
     Remove = 2,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct MonitorRequest {
+struct TrafficCountDeviceRequest {
     iface: String,
     action: Action,
 }
 
-async fn heartbeat() -> Result<Response<Body>, hyper::Error> {
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::from("ok"))
-        .unwrap())
+// 查询对应接口的流量统计信息
+async fn traffic_count(Extension(ebpf_manager): Extension<Arc<EbpfManager>>) -> impl IntoResponse {
+    let mut traffic_stats = TrafficStats::new();
+    let ebpf = ebpf_manager.ebpf.lock().await;
+    traffic_stats.update_from_ebpf(&ebpf);
+    Json(traffic_stats.report_ip_stats())
 }
 
-async fn handle_monitor_device(
-    tc: &mut SchedClassifier,
-    req: Request<Body>,
-) -> Result<Response<Body>, hyper::Error> {
-    if req.method() != Method::POST {
-        return Ok(Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Body::from("Method not allowed"))
-            .unwrap());
-    }
+async fn traffic_count_attach_device(
+    Extension(ebpf_manager): Extension<Arc<EbpfManager>>,
+    Json(request): Json<TrafficCountDeviceRequest>,
+) -> impl IntoResponse {
+    info!(
+        "traffic_count_attach_device 处理请求: iface={}, action={:?}",
+        request.iface, request.action
+    );
 
-    let whole_body = hyper::body::to_bytes(req.into_body()).await?;
-    println!("收到请求: {}", String::from_utf8_lossy(&whole_body));
+    match request.action {
+        Action::Add => {
+            // 检查接口是否存在
+            if !std::path::Path::new(&format!("/sys/class/net/{}", request.iface)).exists() {
+                info!("错误: 接口 {} 不存在", request.iface);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Interface {} does not exist", request.iface),
+                );
+            }
 
-    match serde_json::from_slice::<MonitorRequest>(&whole_body) {
-        Ok(request) => {
-            println!(
-                "处理请求: iface={}, action={:?}",
-                request.iface, request.action
-            );
+            // 检查是否已经有TC程序附加到该接口
+            let tc_check_path = format!("/sys/fs/bpf/tc/globals/xnet_tc_{}", request.iface);
+            if std::path::Path::new(&tc_check_path).exists() {
+                info!("警告: TC程序已经附加到接口 {}，跳过附加操作", request.iface);
+                return (StatusCode::OK, "TC program already attached".to_string());
+            }
 
-            match request.action {
-                Action::Add => {
-                    // 检查接口是否存在
-                    if !std::path::Path::new(&format!("/sys/class/net/{}", request.iface)).exists()
-                    {
-                        println!("错误: 接口 {} 不存在", request.iface);
-                        return Ok(Response::builder()
-                            .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!(
-                                "Interface {} does not exist",
-                                request.iface
-                            )))
-                            .unwrap());
-                    }
+            // 获取 eBPF 实例的可变访问
+            let mut ebpf = ebpf_manager.ebpf.lock().await;
+            let tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into().unwrap();
 
-                    // 检查是否已经有TC程序附加到该接口
-                    let tc_check_path = format!("/sys/fs/bpf/tc/globals/xnet_tc_{}", request.iface);
-                    if std::path::Path::new(&tc_check_path).exists() {
-                        println!("警告: TC程序已经附加到接口 {}，跳过附加操作", request.iface);
-                        return Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Body::from("TC program already attached"))
-                            .unwrap());
-                    }
-
-                    // 使用超时机制防止卡住
-                    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                        println!("正在附加TC程序到接口 {}...", request.iface);
-                        if let Err(e) = tc
-                            .attach(&request.iface, TcAttachType::Ingress)
-                            .context("failed to attach the TC program")
-                        {
-                            println!("错误: 附加TC程序失败: {}", e);
-                            return Err(format!("Failed to attach TC program: {}", e));
-                        }
-
-                        println!("成功附加TC程序到接口 {}", request.iface);
-                        Ok(())
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(())) => {
-                            println!("操作成功完成");
-                            Ok(Response::builder()
-                                .status(StatusCode::OK)
-                                .body(Body::from("ok"))
-                                .unwrap())
-                        }
-                        Ok(Err(e)) => {
-                            println!("操作失败: {}", e);
-                            Ok(Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from(format!("Operation failed: {}", e)))
-                                .unwrap())
-                        }
-                        Err(_) => {
-                            println!("操作超时");
-                            Ok(Response::builder()
-                                .status(StatusCode::REQUEST_TIMEOUT)
-                                .body(Body::from("Operation timeout"))
-                                .unwrap())
-                        }
-                    }
-                }
-                Action::Remove => {
-                    println!("Remove action - 目前只是返回成功");
-                    Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Body::from("ok"))
-                        .unwrap())
-                }
+            if tc.attach(&request.iface, TcAttachType::Ingress).is_ok()
+                && tc.attach(&request.iface, TcAttachType::Egress).is_ok()
+            {
+                info!("成功附加TC程序到接口 {}", request.iface);
+                (StatusCode::OK, "ok".to_string())
+            } else {
+                info!("失败附加TC程序到接口 {}", request.iface);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to attach TC program".to_string(),
+                )
             }
         }
-        Err(e) => {
-            println!("JSON解析错误: {}", e);
-            Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Body::from(format!("Invalid JSON: {}", e)))
-                .unwrap())
+        Action::Remove => {
+            info!("Remove action - 目前只是返回成功");
+            (StatusCode::OK, "ok".to_string())
         }
     }
 }
 
-async fn handle_request(
-    // tc: &mut SchedClassifier,
-    req: Request<Body>,
-) -> Result<Response<Body>, hyper::Error> {
-    match req.uri().path() {
-        "/" => heartbeat().await,
-        // "/monitor_device" => handle_monitor_device(tc, req).await,
-        _ => Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("Not found"))
-            .unwrap()),
-    }
-}
+pub async fn serve(ebpf: aya::Ebpf) -> Result<(), anyhow::Error> {
+    // 创建 eBPF 管理器
+    let ebpf_manager = Arc::new(EbpfManager::new(ebpf));
+    
+    // 加载 eBPF 程序
+    ebpf_manager.load_programs().await?;
 
-pub async fn start_server() -> Result<(), hyper::Error> {
-    // 启动 HTTP 服务
-    let addr = ([0, 0, 0, 0], 8090).into();
+    #[rustfmt::skip]
+    let router = Router::new()
+        .route("/", axum::routing::get(|| async {"ok"}))
+        .route("/traffic_count", axum::routing::get(traffic_count))
+        .route("/traffic_count_attach_device", axum::routing::post(traffic_count_attach_device))
+        .layer(Extension(ebpf_manager))
+    ;
 
-    let make_svc = make_service_fn(move |_conn| async move {
-        Ok::<_, hyper::Error>(service_fn(move |req| {
-            async move {
-                // 加载eBPF程序
-                // let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-                //     env!("OUT_DIR"),
-                //     "/xnet"
-                // )))
-                // .unwrap();
-                // let xnet_tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into().unwrap();
-                // xnet_tc.load().unwrap();
-                handle_request(req).await
-            }
-        }))
-    });
-    let server = Server::bind(&addr).serve(make_svc);
-    println!("HTTP 服务器启动在 http://0.0.0.0:8080");
-    server.await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+
+    info!("HTTP 服务器启动在 http://0.0.0.0:8080");
+
+    axum::serve(listener, router).await?;
+
     Ok(())
 }

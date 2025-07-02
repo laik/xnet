@@ -5,14 +5,17 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 use xnet_common::PortStats;
 
-struct ConnectionInfo {
-    src_ip: u32,
-    dst_ip: u32,
-    src_port: u16,
-    dst_port: u16,
-    status: u32,
-    bytes: u64,
-    last_seen: Instant,
+use serde_json::Map as JsonMap;
+use serde_json::Value;
+
+pub struct ConnectionInfo {
+    pub src_ip: u32,
+    pub dst_ip: u32,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub status: u32,
+    pub bytes: u64,
+    pub last_seen: Instant,
 }
 
 pub struct TrafficStats {
@@ -65,6 +68,18 @@ impl TrafficStats {
                 }
             }
         }
+    }
+
+    // 从ebpf中获取每个IP的流量统计，返回一个JSON对象
+    pub fn report_ip_stats(&self) -> JsonMap<String, Value> {
+        let mut map = JsonMap::<String, Value>::new();
+        for (ip, bytes) in self.ip_stats.iter() {
+            map.insert(
+                ip.to_string(),
+                Value::Number(bytes.to_string().parse().unwrap()),
+            );
+        }
+        map
     }
 
     pub fn print_summary(&self) {

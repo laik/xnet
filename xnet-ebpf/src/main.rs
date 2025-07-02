@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-#[allow(unused_imports)]
-
 mod firewall_xdp;
 mod traffic_count_tc;
 
