@@ -1,6 +1,8 @@
 use aya::maps::HashMap as AyaHashMap;
 use aya::maps::MapData;
 use log::info;
+use lazy_static::lazy_static;
+use tokio::sync::Mutex;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Instant;
@@ -83,6 +85,22 @@ impl TrafficStats {
         map
     }
 
+    // 输出类似print_summary的格式，但是不打印连接信息
+    pub fn return_summary(&self) -> String {
+        // ref print_summary return format string
+        let mut summary = String::new();
+        summary.push_str(&format!("更新时间: {:?}\n", self.last_update.elapsed()));
+        summary.push_str(&format!("总包数: {}\n", self.total_packets));
+        summary.push_str(&format!(
+            "总字节数: {:.2} MB\n",
+            self.total_bytes as f64 / (1024.0 * 1024.0)
+        ));
+        summary.push_str(&format!("活跃连接数: {}\n", self.connections.len()));
+        summary.push_str(&format!("活跃端口数: {}\n", self.port_stats.len()));
+        summary.push_str(&format!("========================\n"));
+        summary
+    }
+
     pub fn print_summary(&self) {
         println!("\n=== 流量统计汇总 ===");
         println!("更新时间: {:?}", self.last_update.elapsed());
@@ -153,4 +171,9 @@ impl TrafficStats {
         println!("活跃端口数: {}", self.port_stats.len());
         println!("========================\n");
     }
+}
+
+// 流量统计信息, 全局共享
+lazy_static::lazy_static! {
+    pub static ref TRAFFIC_STATS: Mutex<TrafficStats> = Mutex::new(TrafficStats::new());
 }

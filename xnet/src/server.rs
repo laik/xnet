@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
 use axum::{extract::Json, http::StatusCode, Router};
-use aya::programs::{SchedClassifier as Tc, TcAttachType};
+use aya::programs::tc::SchedClassifierLinkId;
 use aya::programs::Xdp;
+use aya::programs::{SchedClassifier as Tc, TcAttachType};
 use aya::Ebpf;
 use log::info;
 use tokio::sync::Mutex;
@@ -26,7 +28,7 @@ impl EbpfManager {
     // 加载所有 eBPF 程序
     pub async fn load_programs(&self) -> Result<(), anyhow::Error> {
         let mut ebpf = self.ebpf.lock().await;
-        
+
         // 加载 XDP 程序
         let xnet_xdp = ebpf.program_mut("xnet_xdp").unwrap();
         let xnet_xdp: &mut Xdp = xnet_xdp.try_into().unwrap();
@@ -56,13 +58,21 @@ struct TrafficCountDeviceRequest {
     action: Action,
 }
 
+lazy_static::lazy_static! {
+    static ref TC_LINK_ID: Mutex<HashMap<String, SchedClassifierLinkId>> = Mutex::new(HashMap::new());
+}
+
+fn key_from_iface(iface: &str, attach_type: TcAttachType) -> String {
+    format!("xnet_tc_{}_{:?}", iface, attach_type)
+}
+
 // 查询对应接口的流量统计信息
 async fn traffic_count(Extension(ebpf_manager): Extension<Arc<EbpfManager>>) -> impl IntoResponse {
-    let mut traffic_stats = TrafficStats::new();
+    let mut traffic_stats = crate::traffic::TRAFFIC_STATS.lock().await;
     let ebpf = ebpf_manager.ebpf.lock().await;
     traffic_stats.update_from_ebpf(&ebpf);
-    traffic_stats.print_summary();
-    Json(traffic_stats.report_ip_stats())
+    // traffic_stats.print_summary();
+    traffic_stats.return_summary()
 }
 
 async fn traffic_count_attach_device(
@@ -96,21 +106,39 @@ async fn traffic_count_attach_device(
             let mut ebpf = ebpf_manager.ebpf.lock().await;
             let tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into().unwrap();
 
-            if tc.attach(&request.iface, TcAttachType::Ingress).is_ok()
-                && tc.attach(&request.iface, TcAttachType::Egress).is_ok()
-            {
-                info!("成功附加TC程序到接口 {}", request.iface);
-                (StatusCode::OK, "ok".to_string())
-            } else {
-                info!("失败附加TC程序到接口 {}", request.iface);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to attach TC program".to_string(),
-                )
-            }
+            let link_id = tc.attach(&request.iface, TcAttachType::Ingress).unwrap();
+            TC_LINK_ID.lock().await.insert(
+                key_from_iface(&request.iface, TcAttachType::Ingress),
+                link_id,
+            );
+
+            let link_id = tc.attach(&request.iface, TcAttachType::Egress).unwrap();
+            TC_LINK_ID.lock().await.insert(
+                key_from_iface(&request.iface, TcAttachType::Egress),
+                link_id,
+            );
+
+            (StatusCode::OK, "ok".to_string())
         }
         Action::Remove => {
-            info!("Remove action - 目前只是返回成功");
+            let mut ebpf = ebpf_manager.ebpf.lock().await;
+            let tc: &mut Tc = ebpf.program_mut("xnet_tc").unwrap().try_into().unwrap();
+
+            let ingress_link_id = TC_LINK_ID
+                .lock()
+                .await
+                .remove(&key_from_iface(&request.iface, TcAttachType::Ingress));
+            let egress_link_id = TC_LINK_ID
+                .lock()
+                .await
+                .remove(&key_from_iface(&request.iface, TcAttachType::Egress));
+
+            if let Some(link_id) = ingress_link_id {
+                tc.detach(link_id).unwrap();
+            }
+            if let Some(link_id) = egress_link_id {
+                tc.detach(link_id).unwrap();
+            }
             (StatusCode::OK, "ok".to_string())
         }
     }
@@ -119,7 +147,7 @@ async fn traffic_count_attach_device(
 pub async fn serve(ebpf: aya::Ebpf) -> Result<(), anyhow::Error> {
     // 创建 eBPF 管理器
     let ebpf_manager = Arc::new(EbpfManager::new(ebpf));
-    
+
     // 加载 eBPF 程序
     ebpf_manager.load_programs().await?;
 
