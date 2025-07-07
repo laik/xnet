@@ -1,5 +1,6 @@
 use aya::maps::HashMap as AyaHashMap;
 use aya::maps::MapData;
+use log::info;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Instant;

@@ -61,6 +61,7 @@ async fn traffic_count(Extension(ebpf_manager): Extension<Arc<EbpfManager>>) -> 
     let mut traffic_stats = TrafficStats::new();
     let ebpf = ebpf_manager.ebpf.lock().await;
     traffic_stats.update_from_ebpf(&ebpf);
+    traffic_stats.print_summary();
     Json(traffic_stats.report_ip_stats())
 }
 
