@@ -4,6 +4,7 @@
 mod firewall_xdp;
 mod traffic_count_tc;
 
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

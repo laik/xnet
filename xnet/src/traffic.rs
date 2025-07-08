@@ -1,12 +1,12 @@
 use aya::maps::HashMap as AyaHashMap;
 use aya::maps::MapData;
-use log::info;
 use lazy_static::lazy_static;
-use tokio::sync::Mutex;
+use log::info;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Instant;
-use xnet_common::PortStats;
+use tokio::sync::Mutex;
+use xnet_common::{DeviceStats, PortStats};
 
 use serde_json::Map as JsonMap;
 use serde_json::Value;
@@ -26,6 +26,7 @@ pub struct TrafficStats {
     pub connections: HashMap<u64, ConnectionInfo>,
     pub last_update: Instant,
     pub port_stats: HashMap<u16, PortStats>,
+    pub device_stats: HashMap<String, DeviceStats>,
     pub total_packets: u64,
     pub total_bytes: u64,
 }
@@ -37,6 +38,7 @@ impl TrafficStats {
             connections: HashMap::new(),
             last_update: Instant::now(),
             port_stats: HashMap::new(),
+            device_stats: HashMap::new(),
             total_packets: 0,
             total_bytes: 0,
         }
@@ -71,6 +73,46 @@ impl TrafficStats {
                 }
             }
         }
+
+        // 读取设备统计信息
+        if let Some(device_stats) = ebpf.map("device_stats") {
+            if let Ok(device_stats_map) =
+                AyaHashMap::<&MapData, u32, DeviceStats>::try_from(&*device_stats)
+            {
+                // 遍历所有设备统计
+                for key in 0..1024 {
+                    match device_stats_map.get(&key, 0) {
+                        Ok(stats) if stats.packets > 0 => {
+                            // 根据key生成设备名称和方向
+                            let device_id = key / 2;
+                            let is_ingress = key % 2 == 0;
+                            let direction = if is_ingress { "ingress" } else { "egress" };
+
+                            // 从内存中的设备映射获取真实的设备名称
+                            let device_name = {
+                                use crate::server::DEVICE_MAPPINGS;
+                                let device_mappings = DEVICE_MAPPINGS.try_lock();
+                                let mut found_name = format!("device{}", device_id);
+
+                                if let Ok(mappings) = device_mappings {
+                                    for (name, &id) in mappings.iter() {
+                                        if id == device_id {
+                                            found_name = name.clone();
+                                            break;
+                                        }
+                                    }
+                                }
+                                found_name
+                            };
+
+                            let device_key = format!("{}_{}", device_name, direction);
+                            self.device_stats.insert(device_key, stats);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     // 从ebpf中获取每个IP的流量统计，返回一个JSON对象
@@ -81,6 +123,15 @@ impl TrafficStats {
                 ip.to_string(),
                 Value::Number(bytes.to_string().parse().unwrap()),
             );
+        }
+        map
+    }
+
+    // 输出设备映射及流量统计
+    pub fn return_device_stats(&self) -> JsonMap<String, Value> {
+        let mut map = JsonMap::<String, Value>::new();
+        for (device_key, stats) in self.device_stats.iter() {
+            map.insert(device_key.clone(), stats.bytes.to_string().parse().unwrap());
         }
         map
     }
@@ -97,6 +148,7 @@ impl TrafficStats {
         ));
         summary.push_str(&format!("活跃连接数: {}\n", self.connections.len()));
         summary.push_str(&format!("活跃端口数: {}\n", self.port_stats.len()));
+        summary.push_str(&format!("活跃设备数: {}\n", self.device_stats.len()));
         summary.push_str(&format!("========================\n"));
         summary
     }
@@ -126,6 +178,25 @@ impl TrafficStats {
             println!(
                 "端口: {:5} | 包数: {:8} | 流量: {:>10} | 最后活跃: {:8}",
                 port, stats.packets, traffic_str, stats.last_seen
+            );
+        }
+
+        // 显示设备流量统计
+        println!("\n--- 设备流量统计 ---");
+        let mut sorted_devices: Vec<_> = self.device_stats.iter().collect();
+        sorted_devices.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes));
+
+        for (device_key, stats) in sorted_devices.iter().take(10) {
+            let mb = stats.bytes as f64 / (1024.0 * 1024.0);
+            let kb = stats.bytes as f64 / 1024.0;
+            let traffic_str = if mb >= 1.0 {
+                format!("{:.2} MB", mb)
+            } else {
+                format!("{:.2} KB", kb)
+            };
+            println!(
+                "设备: {:15} | 包数: {:8} | 流量: {:>10} | 最后活跃: {:8}",
+                device_key, stats.packets, traffic_str, stats.last_seen
             );
         }
 
@@ -169,6 +240,7 @@ impl TrafficStats {
         println!("总连接数: {}", self.connections.len());
         println!("活跃连接数: {}", active_connections.len());
         println!("活跃端口数: {}", self.port_stats.len());
+        println!("活跃设备数: {}", self.device_stats.len());
         println!("========================\n");
     }
 }

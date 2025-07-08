@@ -23,9 +23,22 @@ pub struct PortStats {
     pub last_seen: u64,
 }
 
+// 定义设备流量统计结构，供用户空间和内核空间共享
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+pub struct DeviceStats {
+    pub packets: u64,
+    pub bytes: u64,
+    pub last_seen: u64,
+}
+
 // Add aya::Pod implementation for PortStats when aya feature is enabled
 #[cfg(feature = "aya")]
 unsafe impl aya::Pod for PortStats {}
+
+// Add aya::Pod implementation for DeviceStats when aya feature is enabled
+#[cfg(feature = "aya")]
+unsafe impl aya::Pod for DeviceStats {}
 
 // 存储IP地址的静态缓冲区
 static mut IP_BUFFER: [u8; 16] = [0; 16];
