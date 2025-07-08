@@ -5,7 +5,7 @@ use aya_ebpf::{
     programs::TcContext,
 };
 use aya_log_ebpf::{debug, info, WriteToBuf};
-use xnet_common::{int_to_ip, DeviceStats, PortStats};
+use xnet_common::{int_to_ip, DeviceConnectionStats, DeviceStats, PortStats};
 use xnet_ebpf::{EthHdr, IpHdr, Protocol, TcpHdr};
 
 // 定义端口统计map
@@ -25,9 +25,14 @@ static mut DEVICE_STATS: HashMap<u32, DeviceStats> = HashMap::with_max_entries(1
 #[map(name = "device_map")]
 static mut DEVICE_MAP: HashMap<[u8; 16], u32> = HashMap::with_max_entries(64, 0);
 
-// 当前设备上下文信息 - 使用设备ID作为key
+// 当前设备上下文信息 - 使用设备ID作为key，如果没有此上下文，则不会统计流量
 #[map(name = "device_context")]
 static mut DEVICE_CONTEXT: HashMap<u32, u32> = HashMap::with_max_entries(64, 0);
+
+// 记录设备的连接的信息，例如 device_id, src_port, dst_port, direction, protocol, timestamp, total_packets, total_bytes
+#[map(name = "device_connection_stats")]
+static mut DEVICE_CONNECTION_STATS: HashMap<u32, DeviceConnectionStats> =
+    HashMap::with_max_entries(1024, 0);
 
 // 生成设备统计key的函数
 fn generate_device_key(device_id: u32, is_ingress: bool) -> u32 {
@@ -37,6 +42,101 @@ fn generate_device_key(device_id: u32, is_ingress: bool) -> u32 {
         device_id * 2
     } else {
         device_id * 2 + 1
+    }
+}
+
+// 生成设备连接统计key的函数
+fn generate_connection_key(
+    device_id: u32,
+    src_port: u16,
+    dst_port: u16,
+    direction: u32,
+    protocol: u32,
+) -> u32 {
+    // 使用设备ID、端口、方向和协议生成key
+    // 使用简单的哈希算法组合这些值
+    let mut key = device_id;
+    key = key.wrapping_add(src_port as u32);
+    key = key.wrapping_add((dst_port as u32) << 16);
+    key = key.wrapping_add(direction << 24);
+    key = key.wrapping_add(protocol << 28);
+    key
+}
+
+// 检查设备是否为veth设备
+fn is_veth_device(device_id: u32) -> bool {
+    unsafe {
+        // 遍历DEVICE_MAP，查找device_id对应的设备名
+        let mut name_buf: [u8; 16] = [0; 16];
+        let mut found = false;
+        for i in 0u8..64u8 {
+            name_buf[0] = i;
+            // 这里只能遍历所有可能的key（实际部署时建议优化）
+            if let Some(&id) = DEVICE_MAP.get(&name_buf) {
+                if id == device_id {
+                    // 判断前缀是否为"veth"
+                    if name_buf[0] == b'v'
+                        && name_buf[1] == b'e'
+                        && name_buf[2] == b't'
+                        && name_buf[3] == b'h'
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    }
+}
+
+// 从设备映射中获取设备名称（如果可用）
+fn get_device_name_from_id(device_id: u32) -> Option<[u8; 16]> {
+    unsafe {
+        for i in 0u8..64u8 {
+            let mut name_buf = [0u8; 16];
+            name_buf[0] = i;
+            if let Some(&id) = DEVICE_MAP.get(&name_buf) {
+                if id == device_id {
+                    return Some(name_buf);
+                }
+            }
+        }
+        None
+    }
+}
+
+// 根据设备类型调整方向
+fn adjust_direction_for_device(device_id: u32, is_ingress: bool) -> u32 {
+    if is_veth_device(device_id) {
+        // 如果是veth设备，方向相反
+        if is_ingress {
+            1
+        } else {
+            0
+        }
+    } else {
+        // 其他设备保持原方向
+        if is_ingress {
+            0
+        } else {
+            1
+        }
+    }
+}
+
+// 查询设备连接统计的辅助函数
+fn query_device_connection_stats(device_id: u32) -> Option<DeviceConnectionStats> {
+    unsafe {
+        // 遍历所有可能的连接统计，查找匹配的设备ID
+        for key in 0..1024 {
+            if let Some(stats) = DEVICE_CONNECTION_STATS.get(&key) {
+                if stats.device_id == device_id {
+                    return Some(*stats);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -67,6 +167,52 @@ fn update_device_stats(device_id: u32, is_ingress: bool, packet_len: u64) -> Res
     Ok(())
 }
 
+// 更新设备连接统计信息
+fn update_device_connection_stats(
+    device_id: u32,
+    src_port: u16,
+    dst_port: u16,
+    is_ingress: bool,
+    protocol: u8,
+    packet_len: u64,
+) -> Result<(), ()> {
+    let direction = adjust_direction_for_device(device_id, is_ingress);
+    let protocol_u32 = protocol as u32;
+    let key = generate_connection_key(device_id, src_port, dst_port, direction, protocol_u32);
+
+    unsafe {
+        let current_total = TOTAL_STATS.get(&0).unwrap_or(&0);
+
+        if let Some(stats) = DEVICE_CONNECTION_STATS.get(&key) {
+            let new_stats = DeviceConnectionStats {
+                device_id: stats.device_id,
+                src_port: stats.src_port,
+                dst_port: stats.dst_port,
+                direction: stats.direction,
+                protocol: stats.protocol,
+                timestamp: *current_total,
+                total_packets: stats.total_packets + 1,
+                total_bytes: stats.total_bytes + packet_len,
+            };
+            DEVICE_CONNECTION_STATS.insert(&key, &new_stats, 0);
+        } else {
+            let new_stats = DeviceConnectionStats {
+                device_id,
+                src_port,
+                dst_port,
+                direction,
+                protocol: protocol_u32,
+                timestamp: *current_total,
+                total_packets: 1,
+                total_bytes: packet_len,
+            };
+            DEVICE_CONNECTION_STATS.insert(&key, &new_stats, 0);
+        }
+    }
+
+    Ok(())
+}
+
 // 获取当前设备上下文
 fn get_current_device_context() -> Option<(u32, bool)> {
     unsafe {
@@ -89,9 +235,9 @@ fn get_tc_direction(ctx: &TcContext) -> bool {
     // 由于eBPF无法直接获取挂载点信息，我们使用一个简化的方案
     // 在实际部署中，ingress和egress会使用不同的程序实例
     true // 暂时返回true，表示ingress
-    // let mark = ctx.skb.mark();
-    // let is_ingress = mark & 1 == 0;
-    // return is_ingress;
+         // let mark = ctx.skb.mark();
+         // let is_ingress = mark & 1 == 0;
+         // return is_ingress;
 }
 
 #[classifier]
@@ -200,6 +346,11 @@ pub fn xnet_tc(ctx: TcContext) -> i32 {
     if let Some((device_id, is_ingress)) = get_current_device_context() {
         // 更新设备统计
         let _ = update_device_stats(device_id, is_ingress, packet_len);
+
+        // 更新设备连接统计
+        let _ = update_device_connection_stats(
+            device_id, src_port, dst_port, is_ingress, protocol, packet_len,
+        );
     }
 
     // 记录调试信息

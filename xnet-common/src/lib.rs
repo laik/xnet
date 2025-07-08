@@ -32,6 +32,20 @@ pub struct DeviceStats {
     pub last_seen: u64,
 }
 
+// 定义设备连接统计结构，供用户空间和内核空间共享
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Zeroable, Pod)]
+pub struct DeviceConnectionStats {
+    pub device_id: u32,      // 设备ID
+    pub src_port: u16,       // 源端口
+    pub dst_port: u16,       // 目标端口
+    pub direction: u32,      // 方向: 0=ingress, 1=egress (使用u32确保对齐)
+    pub protocol: u32,       // 协议: 6=TCP, 17=UDP (使用u32确保对齐)
+    pub timestamp: u64,      // 时间戳
+    pub total_packets: u64,  // 总包数
+    pub total_bytes: u64,    // 总字节数
+}
+
 // Add aya::Pod implementation for PortStats when aya feature is enabled
 #[cfg(feature = "aya")]
 unsafe impl aya::Pod for PortStats {}
@@ -39,6 +53,10 @@ unsafe impl aya::Pod for PortStats {}
 // Add aya::Pod implementation for DeviceStats when aya feature is enabled
 #[cfg(feature = "aya")]
 unsafe impl aya::Pod for DeviceStats {}
+
+// Add aya::Pod implementation for DeviceConnectionStats when aya feature is enabled
+#[cfg(feature = "aya")]
+unsafe impl aya::Pod for DeviceConnectionStats {}
 
 // 存储IP地址的静态缓冲区
 static mut IP_BUFFER: [u8; 16] = [0; 16];

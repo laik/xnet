@@ -1,12 +1,13 @@
 use aya::maps::HashMap as AyaHashMap;
 use aya::maps::MapData;
 use lazy_static::lazy_static;
+use log::debug;
 use log::info;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use xnet_common::{DeviceStats, PortStats};
+use xnet_common::{DeviceStats, PortStats, DeviceConnectionStats};
 
 use serde_json::Map as JsonMap;
 use serde_json::Value;
@@ -27,6 +28,7 @@ pub struct TrafficStats {
     pub last_update: Instant,
     pub port_stats: HashMap<u16, PortStats>,
     pub device_stats: HashMap<String, DeviceStats>,
+    pub device_connection_stats: HashMap<u32, DeviceConnectionStats>,
     pub total_packets: u64,
     pub total_bytes: u64,
 }
@@ -39,6 +41,7 @@ impl TrafficStats {
             last_update: Instant::now(),
             port_stats: HashMap::new(),
             device_stats: HashMap::new(),
+            device_connection_stats: HashMap::new(),
             total_packets: 0,
             total_bytes: 0,
         }
@@ -113,6 +116,25 @@ impl TrafficStats {
                 }
             }
         }
+
+        // 读取设备连接统计信息
+        if let Some(device_connection_stats) = ebpf.map("device_connection_stats") {
+            if let Ok(device_connection_stats_map) =
+                AyaHashMap::<&MapData, u32, DeviceConnectionStats>::try_from(&*device_connection_stats)
+            {
+
+                debug!("device_connection_stats_map: {:?}", device_connection_stats_map);
+                // 遍历所有设备连接统计
+                for key in 0..1024 {
+                    match device_connection_stats_map.get(&key, 0) {
+                        Ok(stats) if stats.total_packets > 0 => {
+                            self.device_connection_stats.insert(key, stats);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     // 从ebpf中获取每个IP的流量统计，返回一个JSON对象
@@ -134,6 +156,41 @@ impl TrafficStats {
             map.insert(device_key.clone(), stats.bytes.to_string().parse().unwrap());
         }
         map
+    }
+
+    // 输出设备连接统计
+    #[rustfmt::skip]
+    pub fn return_device_connection_stats(&self) -> JsonMap<String, Value> {
+        let mut map = JsonMap::<String, Value>::new();
+        for (key, stats) in self.device_connection_stats.iter() {
+            let direction_str = if stats.direction == 0 { "ingress" } else { "egress" };
+            let protocol_str = if stats.protocol == 6 { "TCP" } else if stats.protocol == 17 { "UDP" } else { "UNKNOWN" };
+            
+            let stats_info = serde_json::json!({
+                "device_id": stats.device_id,
+                "src_port": stats.src_port,
+                "dst_port": stats.dst_port,
+                "direction": direction_str,
+                "protocol": protocol_str,
+                "timestamp": stats.timestamp,
+                "total_packets": stats.total_packets,
+                "total_bytes": stats.total_bytes
+            });
+            
+            map.insert(format!("connection_{}", key), stats_info);
+        }
+        map
+    }
+
+    // 查询指定设备的连接统计
+    pub fn query_device_connection_stats(&self, device_id: u32) -> Vec<DeviceConnectionStats> {
+        let mut result = Vec::new();
+        for (_, stats) in self.device_connection_stats.iter() {
+            if stats.device_id == device_id {
+                result.push(*stats);
+            }
+        }
+        result
     }
 
     // 输出类似print_summary的格式，但是不打印连接信息

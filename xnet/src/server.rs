@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use axum::{extract::Json, http::StatusCode, Router};
+use axum::{extract::{Json, Path}, http::StatusCode, Router};
 use aya::maps::HashMap as AyaHashMap;
 use aya::maps::MapData;
 use aya::programs::tc::SchedClassifierLinkId;
@@ -130,6 +130,49 @@ async fn traffic_device_state(
     traffic_stats.update_from_ebpf(&ebpf);
     let device_stats = traffic_stats.return_device_stats();
     (StatusCode::OK, Json(device_stats))
+}
+
+// 查询设备连接统计
+async fn traffic_device_connection_stats(
+    Extension(ebpf_manager): Extension<Arc<EbpfManager>>,
+) -> impl IntoResponse {
+    let mut traffic_stats = crate::traffic::TRAFFIC_STATS.lock().await;
+    let ebpf = ebpf_manager.ebpf.lock().await;
+    traffic_stats.update_from_ebpf(&ebpf);
+    let connection_stats = traffic_stats.return_device_connection_stats();
+    (StatusCode::OK, Json(connection_stats))
+}
+
+// 查询指定设备的连接统计
+async fn traffic_device_connection_stats_by_id(
+    Extension(ebpf_manager): Extension<Arc<EbpfManager>>,
+    Path(device_id): Path<u32>,
+) -> impl IntoResponse {
+    let mut traffic_stats = crate::traffic::TRAFFIC_STATS.lock().await;
+    let ebpf = ebpf_manager.ebpf.lock().await;
+    traffic_stats.update_from_ebpf(&ebpf);
+    let connection_stats = traffic_stats.query_device_connection_stats(device_id);
+    
+    let mut result = Vec::new();
+    for stats in connection_stats {
+        let direction_str = if stats.direction == 0 { "ingress" } else { "egress" };
+        let protocol_str = if stats.protocol == 6 { "TCP" } else if stats.protocol == 17 { "UDP" } else { "UNKNOWN" };
+        
+        let stats_info = serde_json::json!({
+            "device_id": stats.device_id,
+            "src_port": stats.src_port,
+            "dst_port": stats.dst_port,
+            "direction": direction_str,
+            "protocol": protocol_str,
+            "timestamp": stats.timestamp,
+            "total_packets": stats.total_packets,
+            "total_bytes": stats.total_bytes
+        });
+        
+        result.push(stats_info);
+    }
+    
+    (StatusCode::OK, Json(result))
 }
 
 // 查询对应接口的流量统计信息
@@ -263,6 +306,8 @@ pub async fn serve(ebpf: aya::Ebpf) -> Result<(), anyhow::Error> {
         .route("/traffic_count", axum::routing::get(traffic_count))
         .route("/traffic_count_attach_device", axum::routing::post(traffic_count_attach_device))
         .route("/traffic_device_state", axum::routing::get(traffic_device_state))
+        .route("/traffic_device_connection_stats", axum::routing::get(traffic_device_connection_stats))
+        .route("/traffic_device_connection_stats/:device_id", axum::routing::get(traffic_device_connection_stats_by_id))
         .layer(Extension(ebpf_manager))
     ;
 
